@@ -2,15 +2,13 @@ import sys
 from PyQt5.QtGui import *
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
-from matplotlib import pyplot as plt
-import imutils
-import numpy as np
-import easyocr
 import cv2
+import numpy as np
 from lp_detection import lp_detection
+from ocrmodel import CNNModel
 
 class VideoThread(QThread):
-    ImageUpdate = pyqtSignal(QImage, list, list, list)
+    ImageUpdate = pyqtSignal(QImage, list, list)
 
     def __init__(self, ocr_type, frame_skip, cam = True, path = ""):
         super().__init__()
@@ -43,16 +41,15 @@ class VideoThread(QThread):
                 pic = ConvertToQtFormat.scaled(1280, 720, Qt.KeepAspectRatio)
 
                 if self.count == self.frame_skip_nr:
-                    (cam_img_res, cam_number_res, conf_res, _) = lp_detection(image, self.OCR_type, video=True)
+                    (cam_img_res, cam_number_res, _) = lp_detection(image, self.OCR_type, video=True)
                     self.count = 0
                 else:
                     cam_img_res = ["__fail__"]
                     cam_number_res = []
-                    conf_res = [0]
 
                     self.count += 1
 
-                self.ImageUpdate.emit(pic, cam_img_res, cam_number_res, conf_res)
+                self.ImageUpdate.emit(pic, cam_img_res, cam_number_res)
 
                 cv2.waitKey(int(1000/self.frame_rate))
 
@@ -99,9 +96,10 @@ class VideoFootage(QWidget):
         self.mainLayout.addWidget(self.FeedLabel, 1, 16, 8, 11)
         
         self.table = QTableWidget()
-        self.table.setColumnCount(3)
+        self.table.setColumnCount(2)
         self.table.setRowCount(0)
-        self.table.setHorizontalHeaderLabels(['Plate Number', 'Confidence', 'Option'])
+        #self.table.setHorizontalHeaderLabels(['Plate Number', 'Confidence', 'Option'])
+        self.table.setHorizontalHeaderLabels(['Plate Number', 'Option'])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         
         self.mainLayout.addWidget(self.table, 1, 1, 1, 15)
@@ -130,8 +128,8 @@ class VideoFootage(QWidget):
         self.VideoThread.ImageUpdate.connect(self.updateScreen)
 
 
-    @pyqtSlot(QImage, list, list, list)
-    def updateScreen(self, image, cam_img_res, cam_number_res, conf_res):
+    @pyqtSlot(QImage, list, list)
+    def updateScreen(self, image, cam_img_res, cam_number_res):
         self.FeedLabel.setPixmap(QPixmap.fromImage(image))
 
         valid = 1
@@ -154,17 +152,13 @@ class VideoFootage(QWidget):
             if valid == 1:
                 self.table.insertRow(rowPosition)
                 self.table.setItem(rowPosition, 0, QTableWidgetItem(cam_number_res[0]))
-                if round(conf_res[0], 2) == 0:
-                    self.table.setItem(rowPosition, 1, QTableWidgetItem("-"))
-                else:
-                    self.table.setItem(rowPosition, 1, QTableWidgetItem(str(round(conf_res[0], 2))+"%"))
 
-                self.table.setItem(rowPosition, 2, QTableWidgetItem())
+                self.table.setItem(rowPosition, 1, QTableWidgetItem())
 
                 self.saveButton =  QPushButton('Save frame', self)            
                 self.saveButton.clicked.connect(lambda ch, i=self.currentFrameNr-1: self.saveFrame(i))
 
-                self.table.setCellWidget(rowPosition, 2, self.saveButton)
+                self.table.setCellWidget(rowPosition, 1, self.saveButton)
 
     def pauseVideo(self):
         self.is_pause = not self.is_pause
@@ -183,7 +177,6 @@ class VideoFootage(QWidget):
         else:
             temp = self.frameCache[i]
         cv2.imshow("CAR", cv2.cvtColor(temp, cv2.COLOR_BGR2RGB))
-        #cv2.imshow("CAR", cv2.cvtColor(self.frameCache[i], cv2.COLOR_BGR2RGB))
         cv2.waitKey(0)
   
     def CancelFeed(self):
@@ -192,12 +185,13 @@ class VideoFootage(QWidget):
 
         
 class ImageInput(QWidget):
-    def __init__(self, path, ocr_type):
+    def __init__(self, path, ocr_type, valley_thresh):
         super(ImageInput, self).__init__()
         
         self.setOCRType(ocr_type)
         self.setPath(path)
         self.image_step = 1
+        self.valley_thresh = valley_thresh
 
         self.setObjectName("ImageInputWidget")
         self.setAttribute(Qt.WA_StyledBackground, True)
@@ -215,17 +209,13 @@ class ImageInput(QWidget):
             rowPosition = self.table.rowCount()
             self.table.insertRow(rowPosition)
             self.table.setItem(rowPosition , 0, QTableWidgetItem(self.nr_res[i]))
-            if round(self.conf_res[i], 2) == 0:
-                self.table.setItem(rowPosition, 1, QTableWidgetItem("-"))
-            else:
-                self.table.setItem(rowPosition, 1, QTableWidgetItem(str(round(self.conf_res[i], 2))+"%"))
 
-            self.table.setItem(rowPosition, 2, QTableWidgetItem())
+            self.table.setItem(rowPosition, 1, QTableWidgetItem())
 
             self.carButton = QPushButton('View car', self)            
             self.carButton.clicked.connect(lambda ch, i=i: self.showCarImage(i))
 
-            self.table.setCellWidget(rowPosition, 2, self.carButton)
+            self.table.setCellWidget(rowPosition, 1, self.carButton)
             
 
         if len(self.nr_res)>0:
@@ -237,15 +227,17 @@ class ImageInput(QWidget):
             self.combo_details.setStyleSheet("selection-color: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0, stop:0 rgba(255, 178, 102, 255), stop:0.55 rgba(235, 148, 61, 255), stop:0.98 rgba(0, 0, 0, 255), stop:1 rgba(0, 0, 0, 0));\n"
     "background-color: rgb(185, 222, 227);")
             self.combo_details.addItem("1. Grayscale")
-            self.combo_details.addItem("2. Blackhat")
-            self.combo_details.addItem("3. Sobel Edge")
-            self.combo_details.addItem("4. Sobel Edge + Closing")
-            self.combo_details.addItem("5. Sobel Edge + Threshold")
-            self.combo_details.addItem("6. Sobel Edge + Threshold + Erosion/Dilation")
-            self.combo_details.addItem("7. Light + Threshold")
-            self.combo_details.addItem("8. Applied Mask")
-            self.combo_details.addItem("9. Final")
-            self.combo_details.addItem("10.Region of interest")
+            self.combo_details.addItem("2. Blackhat (still grayscale for now)")
+            self.combo_details.addItem("3. Edge Detection")
+            self.combo_details.addItem("4. Edge Detection + Closing")
+            self.combo_details.addItem("5. Edge Detection + Erosion/Dilation")
+            self.combo_details.addItem("6. Light + Threshold")
+            self.combo_details.addItem("7. Applied Mask")
+            self.combo_details.addItem("8. Final (same as 7, for now)")
+            self.combo_details.addItem("9. Region of Interest")
+            if valley_thresh > 1:
+                self.combo_details.addItem("10. Vertical Projection")
+                self.combo_details.addItem("11. Valleys Visualization")
             self.combo_details.activated[str].connect(self.set_image_step)
             self.mainLayout.addWidget(self.combo_details, 6, 2, 1, 1)
 
@@ -273,7 +265,10 @@ class ImageInput(QWidget):
         self.image_step = text.split('.')[0]
 
     def showStepImage(self):
-        h, w = self.steps_img[self.row_nr.value()-1][int(self.image_step)-1].shape
+        if int(self.image_step) == 11:
+            h, w, _ = self.steps_img[self.row_nr.value()-1][int(self.image_step)-1].shape
+        else:
+            h, w = self.steps_img[self.row_nr.value()-1][int(self.image_step)-1].shape
         self.temp = self.steps_img[self.row_nr.value()-1][int(self.image_step)-1]
 
         if h < 500:
@@ -323,9 +318,9 @@ class ImageInput(QWidget):
         self.pic = self.qt_image.scaled(600, 400, Qt.KeepAspectRatio)
         self.original_img_label.setPixmap(QPixmap.fromImage(self.pic))
         self.mainLayout.addWidget(self.original_img_label, 1, 0, 1, 1)
-
-        [self.img_res, self.nr_res, self.conf_res, self.steps_img] = lp_detection(self.car_image, self.OCR_type, video=False)
-
+        print("START")
+        [self.img_res, self.nr_res, self.steps_img] = lp_detection(self.car_image, self.OCR_type, self.valley_thresh, video=False)
+        print("DONE")
         if len(self.nr_res)==0:
             self.errorMessage = QLabel()
             self.errorMessage.setText("No license plate found!")
@@ -335,9 +330,9 @@ class ImageInput(QWidget):
             self.mainLayout.addWidget(self.errorMessage, 1, 1, 1, 1)
         else:
             self.table = QTableWidget()
-            self.table.setColumnCount(3)
+            self.table.setColumnCount(2)
             self.table.setRowCount(0)
-            self.table.setHorizontalHeaderLabels(['Plate Number', 'Confidence', 'Option'])
+            self.table.setHorizontalHeaderLabels(['Plate Number', 'Option'])
             self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         
     def setPath(self, path):
@@ -375,18 +370,11 @@ class HomePage(QMainWindow):
 
         self.imageInputButton = QPushButton("Insert an image", self.central_widget)
         self.imageInputButton.setStyleSheet("border-radius: 7px; \n font: 11pt \"Segoe UI\";  color: rgb(252, 255, 255);\n background-color: rgb(170, 96, 255); QPushButton::pressed{ background-color: rgb(0, 0, 255);}")
-        #self.pushButton.setGeometry(QtCore.QRect(320, 130, 201, 61))
         self.imageInputButton.setGeometry(675, 200, 300, 100)
         self.imageInputButton.clicked.connect(self.getImage)
         
-        self.videoButton = QPushButton("Select video", self.central_widget)
-        #self.videoButton.setGeometry(320, 210, 201, 61)
-        self.videoButton.setGeometry(675, 350, 300, 100)
-        self.videoButton.setStyleSheet("border-radius: 7px;\n font: 11pt \"Segoe UI\";  color: rgb(252, 255, 255);\n background-color: rgb(170, 96, 255);")
-        self.videoButton.clicked.connect(self.getVideo)
-
         self.cameraButton = QPushButton("Use Camera Footage", self.central_widget)
-        self.cameraButton.setGeometry(675, 500, 300, 100)
+        self.cameraButton.setGeometry(675, 350, 300, 100)
         self.cameraButton.setStyleSheet("border-radius: 7px;\n font: 11pt \"Segoe UI\";  color: rgb(252, 255, 255);\n background-color: rgb(170, 96, 255);")
         self.cameraButton.clicked.connect(self.changeToCamera)
 
@@ -400,8 +388,8 @@ class HomePage(QMainWindow):
         self.comboBox_ocr.setGeometry(100, 800, 350, 40)
         self.comboBox_ocr.setStyleSheet("selection-color: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0, stop:0 rgba(255, 178, 102, 255), stop:0.55 rgba(235, 148, 61, 255), stop:0.98 rgba(0, 0, 0, 255), stop:1 rgba(0, 0, 0, 0));\n"
 "background-color: rgb(185, 222, 227);")
-        self.comboBox_ocr.addItem("Fast (Tesseract)")
-        self.comboBox_ocr.addItem("Slow (easyOCR)")
+        self.comboBox_ocr.addItem("Auto (Tesseract)")
+        self.comboBox_ocr.addItem("Manual (CustomCNN)")
         self.comboBox_ocr.activated[str].connect(self.set_ocr)
 
         self.label_frame = QLabel("Frame skip:", self.central_widget)
@@ -410,6 +398,14 @@ class HomePage(QMainWindow):
         self.spinBox = QSpinBox(self.central_widget)
         self.spinBox.setGeometry(1400, 802, 60, 30)
         self.spinBox.setMaximum(300)
+
+        self.label_frame_2 = QLabel("Valley threshold (% of min value):", self.central_widget)
+        self.label_frame_2.setGeometry(1130, 760, 350, 30)
+        self.label_frame_2.setStyleSheet("font: 11pt \"Segoe UI\";")
+        self.spinBox_thresh = QSpinBox(self.central_widget)
+        self.spinBox_thresh.setGeometry(1400, 760, 60, 30)
+        self.spinBox_thresh.setMaximum(500)
+        self.spinBox_thresh.setValue(200)
         
 
     def set_ocr(self, text):
@@ -428,20 +424,10 @@ class HomePage(QMainWindow):
         imagePath = fname[0]
         
         if imagePath !="":
-            img = ImageInput(imagePath, self.ocr_type)
+            self.valley_thresh = self.spinBox_thresh.value()
+            img = ImageInput(imagePath, self.ocr_type, self.valley_thresh)
             stack.addWidget(img)
             stack.setCurrentWidget(img)
-    
-    def getVideo(self):
-        vname = QFileDialog.getOpenFileName(self, 'Select a video', '', "Video (*.mp4);;All Files (*)")
-        videoPath = vname[0]
-
-        if videoPath !="":
-            self.frame_skip = self.spinBox.value()
-            vid = VideoFootage(self.ocr_type, self.frame_skip, False, videoPath)
-            stack.addWidget(vid)
-            stack.setCurrentWidget(vid)
-             
 
 if __name__ == "__main__":
     App = QApplication(sys.argv)

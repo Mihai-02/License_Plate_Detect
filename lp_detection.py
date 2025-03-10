@@ -1,48 +1,35 @@
 import cv2
-import numpy as np
-import torch
 import imutils
-import easyocr
 import pytesseract
-import pandas
-
+import torch
 from vehicle_detection import detect_vehicles
+from ocrmodel import CNNModel
+from edge_detection import detect_edges
+from ocr import manual_ocr
 
+def perform_ocr(number, ocr_type, roi_nr, valley_thresh):
+    if ocr_type=="CustomCNN":
+        text, steps_img = manual_ocr(number, roi_nr, valley_thresh)
 
-def perform_ocr(number, ocr_type):
-    h, w = number.shape
-
-    new_width = int(3 * w)
-    new_height = int(3 * h)
-    new_res = (new_width, new_height)
-    
-    number = cv2.resize(number, new_res, interpolation=cv2.INTER_LINEAR)
-
-    if ocr_type=="easyOCR":
-        reader = easyocr.Reader(['en'])
-        result = reader.readtext(number)
-
-        text = "__fail__"
-
-        if(result == []):
-            return text, 0
-        else:
-            conf = result[0][-1]*100
-            text = result[0][-2]
-            if(text == []):
-                text = "__fail__"
-
-            return text, conf
+        return text, steps_img
 
     elif ocr_type=="Tesseract":
         #PSM 4 - Single Column of Text of Variable Sizes
         #PSM 6 - Single Uniform Block of Text
         #PSM 7 - Single Text Line
         #PSM 11. Sparse Text
-        psm = 7
+        psm = 6
         alphanumeric = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-"
         options = "-c tessedit_char_whitelist={}".format(alphanumeric)
         options += " --psm {}".format(psm)
+
+        h, w = number.shape
+
+        new_width = int(3 * w)
+        new_height = int(3 * h)
+        new_res = (new_width, new_height)
+
+        number = cv2.resize(number, new_res, interpolation=cv2.INTER_LINEAR)
 
         pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
         d = pytesseract.image_to_data(number, lang='eng', config=options, output_type=pytesseract.Output.DICT)
@@ -53,71 +40,67 @@ def perform_ocr(number, ocr_type):
                 text = text+wd+" "
         text = text[:-1]
 
-        confidence = d['conf']
-        confidence = np.array( [ num for num in confidence if num >= 0 ] )
-        conf = confidence.mean()
+        steps_img = []
 
-        return text, conf
+        return text, steps_img
 
-def license_plate_detection(image, ocr_type):
+def license_plate_detection(image, ocr_type, valley_thresh):
     steps_img = []
 
     gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     steps_img.append(gray_image)
 
+    blackhat = gray_image
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (13, 5))
     blackhat = cv2.morphologyEx(gray_image, cv2.MORPH_BLACKHAT, kernel)
     steps_img.append(blackhat)
 
-    gradX = cv2.Sobel(blackhat, cv2.CV_32F, 1, 0, ksize=3)
-    gradY = cv2.Sobel(blackhat, cv2.CV_32F, 0, 1, ksize=3)
-    abs_gradX = cv2.convertScaleAbs(gradX)
-    abs_gradY = cv2.convertScaleAbs(gradY)
-    edge = cv2.addWeighted(abs_gradX, 0.8, abs_gradY, 0.2, 0)
+    edge = detect_edges(blackhat)
     steps_img.append(edge)
 
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (13, 5))
     edge = cv2.morphologyEx(edge, cv2.MORPH_CLOSE, kernel)
     steps_img.append(edge)
 
-    thresh = cv2.threshold(edge, 0, 255,cv2.THRESH_BINARY+cv2.THRESH_OTSU)[1]
-    steps_img.append(thresh)
-
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    thresh = cv2.erode(thresh, kernel, iterations=2)
+    edge = cv2.erode(edge, kernel, iterations=2)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
-    thresh = cv2.dilate(thresh, kernel, iterations=2)
-    steps_img.append(thresh)
+    edge = cv2.dilate(edge, kernel, iterations=2)
+    steps_img.append(edge)
 
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
     light = cv2.morphologyEx(gray_image, cv2.MORPH_CLOSE, kernel)
     light = cv2.threshold(light, 0, 255,cv2.THRESH_BINARY+cv2.THRESH_OTSU)[1]
     steps_img.append(light)
-    
-    thresh = cv2.bitwise_and(thresh, thresh, mask=light)
-    steps_img.append(thresh)
+
+    edge = cv2.bitwise_and(edge, edge, mask=light)
+    steps_img.append(edge)
 
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-    thresh = cv2.dilate(thresh, kernel, iterations=2)
-    thresh = cv2.erode(thresh, kernel, iterations=2)
-    steps_img.append(thresh)
- 
-    cnts = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
+    edge = cv2.dilate(edge, kernel, iterations=2)
+    edge = cv2.erode(edge, kernel, iterations=2)
+
+    edge = cv2.threshold(edge, 127, 255,cv2.THRESH_BINARY)[1]
+
+    steps_img.append(edge)
+
+    cnts = cv2.findContours(edge.copy(), cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
     cnts = imutils.grab_contours(cnts)
-    cnts = sorted(cnts, key=cv2.contourArea, reverse=True)[:10]
+    cnts = sorted(cnts, key=cv2.contourArea, reverse=True)[:5]
 
-    minAR = 1.3
-    maxAR = 4.9
+    minAR = 1.5
+    maxAR = 5.9
 
-    for c in cnts:
+    for idx, c in enumerate(cnts):
         (x, y, w, h) = cv2.boundingRect(c)
         ar = w / float(h)
+
         if ar >= minAR and ar <= maxAR:
             licensePlate = gray_image[y:y + h, x:x + w]
 
             number = cv2.threshold(licensePlate, 0, 255,cv2.THRESH_BINARY_INV+cv2.THRESH_OTSU)[1]
-            
-            text, conf = perform_ocr(number, ocr_type)
+
+            text, steps_ocr = perform_ocr(number, ocr_type, idx, valley_thresh)
 
             if text != "__fail__" and len(text)>=4:
                 font = cv2.FONT_HERSHEY_SIMPLEX
@@ -125,28 +108,29 @@ def license_plate_detection(image, ocr_type):
                 res = cv2.rectangle(image, (x, y), (x + w, y + h), (0,255,0),3)
 
                 steps_img.append(number)
-            
-                return res, text, conf, steps_img
 
-    return None, "__fail__", 0, steps_img
+                for step in steps_ocr:
+                    steps_img.append(step)
+
+                return res, text, steps_img
+
+    return None, "__fail__", steps_img
 
 
-def lp_detection(initial_img, ocr_type, video=False):
+def lp_detection(initial_img, ocr_type, valley_thresh=1, video=False):
     img_results = []
     nr_results = []
-    conf_results = []
     steps_img_2d = []
 
     if video==False:
-        cropped_cars = detect_vehicles(initial_img)    #detectare masini in imaginea initiala
+        cropped_cars = detect_vehicles(initial_img)
     elif video==True:
         cropped_cars = [initial_img]
     for car in cropped_cars:
-        (res, number, confidence, steps_img) = license_plate_detection(car, ocr_type)
-        if number !="__fail__" and len(number)>=4:
+        (res, number, steps_img) = license_plate_detection(car, ocr_type, valley_thresh)
+        if number !="__fail__" and len(number)>=3:
             img_results.append(res)
             nr_results.append(number)
-            conf_results.append(confidence)
             steps_img_2d.append(steps_img)
-    
-    return img_results, nr_results, conf_results, steps_img_2d
+
+    return img_results, nr_results, steps_img_2d
