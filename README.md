@@ -16,11 +16,14 @@ The project was done in a limited hardware environment, with emphasis on impleme
 
 
 ## Visual Example
-![GUI](resources/GUI.png)
-![ROI](resources/ROI.png)
-![valleys](resources/valleys.png)
-![results_customCNN](resources/result_customCNN.png)
-![results_Tesseract](resources/result_Tesseract.png)
+
+|  Region of Interest | Vertical Projection |
+|---|---|
+|  ![](resources/ROI.png) | ![](resources/valleys.png) |
+
+| Input Image | Tesseract Result | CNN Result |
+|---|---|---|
+| ![](resources/initial.png) | ![](resources/result_Tesseract.png) | ![](resources/result_customCNN.png) |
 
 ## Setup and Running
 ```
